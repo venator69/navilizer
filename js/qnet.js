@@ -77,49 +77,28 @@ function stepEnv(grid, r, c, a, goal) {
 }
 
 /**
- * One training episode with backprop (one-step TD target).
+ * One rollout: collect transitions only (no weight updates). For data-acquisition phase.
  */
-export function trainEpisodeQNet(net, grid, start, goal, opts) {
+export function collectEpisodeQNet(net, grid, start, goal, opts = {}) {
   const {
     epsilon = 0.3,
-    alpha = 0.02,
-    gamma = 0.95,
     maxSteps = 400,
   } = opts;
+  const transitions = [];
   let [r, c] = start;
+  const [gr, gc] = goal;
   const path = [[r, c]];
-  let totalLoss = 0;
   let steps = 0;
   const x = new Float32Array(6);
-  const h = new Float32Array(net.H);
-  const hPre = new Float32Array(net.H);
   const q = new Float32Array(4);
-  const qNext = new Float32Array(4);
-  const gradH = new Float32Array(net.H);
-  const gradW2 = new Float32Array(net.W2.length);
-  const gradB2 = new Float32Array(4);
-  const gradW1 = new Float32Array(net.W1.length);
-  const gradB1 = new Float32Array(net.H);
 
   for (let t = 0; t < maxSteps; t++) {
     steps++;
-    const [gr, gc] = goal;
     if (r === gr && c === gc) break;
 
     const sv = stateVec(r, c, gr, gc);
     for (let i = 0; i < 6; i++) x[i] = sv[i];
-
-    for (let j = 0; j < net.H; j++) {
-      let s = net.b1[j];
-      for (let i = 0; i < 6; i++) s += x[i] * net.W1[i * net.H + j];
-      hPre[j] = s;
-      h[j] = Math.max(0, s);
-    }
-    for (let k = 0; k < 4; k++) {
-      let s = net.b2[k];
-      for (let j = 0; j < net.H; j++) s += h[j] * net.W2[j * 4 + k];
-      q[k] = s;
-    }
+    net.forward(x, q);
 
     let a;
     if (Math.random() < epsilon) {
@@ -131,59 +110,126 @@ export function trainEpisodeQNet(net, grid, start, goal, opts) {
 
     const { nr, nc, reward } = stepEnv(grid, r, c, a, goal);
     const sv2 = stateVec(nr, nc, gr, gc);
+    const x2 = new Float32Array(6);
+    for (let i = 0; i < 6; i++) x2[i] = sv2[i];
+    const done = nr === gr && nc === gc;
+    transitions.push({
+      x: new Float32Array(sv),
+      a,
+      reward,
+      x2,
+      done,
+    });
+
+    r = nr;
+    c = nc;
+    path.push([r, c]);
+    if (done) break;
+  }
+
+  const reached = r === goal[0] && c === goal[1];
+  return { steps, path, reachedGoal: reached, transitions };
+}
+
+/**
+ * Single TD gradient step from one transition (training phase).
+ */
+export function trainOneStepQNet(net, trans, alpha, gamma) {
+  const { x, a, reward, x2, done } = trans;
+  const h = new Float32Array(net.H);
+  const hPre = new Float32Array(net.H);
+  const q = new Float32Array(4);
+  const qNext = new Float32Array(4);
+  const gradH = new Float32Array(net.H);
+  const gradW2 = new Float32Array(net.W2.length);
+  const gradB2 = new Float32Array(4);
+  const gradW1 = new Float32Array(net.W1.length);
+  const gradB1 = new Float32Array(net.H);
+
+  for (let j = 0; j < net.H; j++) {
+    let s = net.b1[j];
+    for (let i = 0; i < 6; i++) s += x[i] * net.W1[i * net.H + j];
+    hPre[j] = s;
+    h[j] = Math.max(0, s);
+  }
+  for (let k = 0; k < 4; k++) {
+    let s = net.b2[k];
+    for (let j = 0; j < net.H; j++) s += h[j] * net.W2[j * 4 + k];
+    q[k] = s;
+  }
+
+  let maxNext = 0;
+  if (!done) {
     for (let k = 0; k < 4; k++) {
       let s2 = net.b2[k];
       for (let j = 0; j < net.H; j++) {
         let s = net.b1[j];
-        for (let i = 0; i < 6; i++) s += sv2[i] * net.W1[i * net.H + j];
+        for (let i = 0; i < 6; i++) s += x2[i] * net.W1[i * net.H + j];
         const hj = Math.max(0, s);
         s2 += hj * net.W2[j * 4 + k];
       }
       qNext[k] = s2;
     }
-    let maxNext = qNext[0];
+    maxNext = qNext[0];
     for (let k = 1; k < 4; k++) maxNext = Math.max(maxNext, qNext[k]);
-    const target = reward + gamma * maxNext;
-    const tdErr = target - q[a];
-    totalLoss += tdErr * tdErr;
-
-    gradB2.fill(0);
-    gradW2.fill(0);
-    gradH.fill(0);
-    gradB1.fill(0);
-    gradW1.fill(0);
-
-    for (let k = 0; k < 4; k++) {
-      const d = k === a ? -tdErr : 0;
-      gradB2[k] = d;
-      for (let j = 0; j < net.H; j++) {
-        gradW2[j * 4 + k] = d * h[j];
-        gradH[j] += d * net.W2[j * 4 + k];
-      }
-    }
-
-    for (let j = 0; j < net.H; j++) {
-      const relu = hPre[j] > 0 ? 1 : 0;
-      const gh = gradH[j] * relu;
-      gradB1[j] = gh;
-      for (let i = 0; i < 6; i++) {
-        gradW1[i * net.H + j] = gh * x[i];
-      }
-    }
-
-    for (let i = 0; i < net.W1.length; i++) net.W1[i] -= alpha * gradW1[i];
-    for (let j = 0; j < net.H; j++) net.b1[j] -= alpha * gradB1[j];
-    for (let i = 0; i < net.W2.length; i++) net.W2[i] -= alpha * gradW2[i];
-    for (let k = 0; k < 4; k++) net.b2[k] -= alpha * gradB2[k];
-
-    r = nr;
-    c = nc;
-    path.push([r, c]);
-    if (r === gr && c === gc) break;
   }
 
-  const reached = r === goal[0] && c === goal[1];
-  return { steps, path, reachedGoal: reached, loss: totalLoss / Math.max(1, steps) };
+  const target = reward + (done ? 0 : gamma * maxNext);
+  const tdErr = target - q[a];
+
+  gradB2.fill(0);
+  gradW2.fill(0);
+  gradH.fill(0);
+  gradB1.fill(0);
+  gradW1.fill(0);
+
+  for (let k = 0; k < 4; k++) {
+    const d = k === a ? -tdErr : 0;
+    gradB2[k] = d;
+    for (let j = 0; j < net.H; j++) {
+      gradW2[j * 4 + k] = d * h[j];
+      gradH[j] += d * net.W2[j * 4 + k];
+    }
+  }
+
+  for (let j = 0; j < net.H; j++) {
+    const relu = hPre[j] > 0 ? 1 : 0;
+    const gh = gradH[j] * relu;
+    gradB1[j] = gh;
+    for (let i = 0; i < 6; i++) {
+      gradW1[i * net.H + j] = gh * x[i];
+    }
+  }
+
+  for (let i = 0; i < net.W1.length; i++) net.W1[i] -= alpha * gradW1[i];
+  for (let j = 0; j < net.H; j++) net.b1[j] -= alpha * gradB1[j];
+  for (let i = 0; i < net.W2.length; i++) net.W2[i] -= alpha * gradW2[i];
+  for (let k = 0; k < 4; k++) net.b2[k] -= alpha * gradB2[k];
+
+  return tdErr * tdErr;
+}
+
+/**
+ * Train on replay buffer: random sampling for `gradientSteps` updates.
+ */
+export function trainOnBufferQNet(net, buffer, opts = {}) {
+  const {
+    gradientSteps = 2000,
+    alpha = 0.02,
+    gamma = 0.95,
+    batchLogInterval = 100,
+  } = opts;
+  if (!buffer.length) return { meanLoss: 0, steps: 0 };
+  let totalLoss = 0;
+  for (let s = 0; s < gradientSteps; s++) {
+    const trans = buffer[(Math.random() * buffer.length) | 0];
+    const l = trainOneStepQNet(net, trans, alpha, gamma);
+    totalLoss += l;
+  }
+  return {
+    meanLoss: totalLoss / gradientSteps,
+    steps: gradientSteps,
+  };
 }
 
 /** Approximate max Q per cell for heatmap (sample actions from cell). */

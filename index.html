@@ -3,14 +3,15 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>16×16 Forklift Pathfinding Lab</title>
+    <title>Navilizer</title>
     <link rel="stylesheet" href="css/style.css" />
   </head>
   <body>
     <div class="layout">
       <header>
         <div class="container">
-          <div class="header-title">16×16 pixel forklift simulator</div>
+          <div class="header-title">Navilizer</div>
+          <div class="sub-title">A pathfinding and navigation simulator</div>
         </div>
         <div class="container">
           <div class="toolbar">
@@ -42,6 +43,18 @@
                 "
               />
             </label>
+            <label
+              id="q-path-mode-wrap"
+              style="display: none"
+              title="When checked, episode path animation runs only after the last training episode."
+            >
+              <input type="checkbox" id="q-path-final-only" />
+              Final ep path only
+            </label>
+            <label id="dq-viz-acq-wrap" style="display: none" title="Show heatmaps while collecting rollout data (phase 1). Final path plays after training.">
+              <input type="checkbox" id="dq-viz-acquisition" />
+              Show data acquisition viz
+            </label>
             <button type="button" id="btn-new">New terrain</button>
             <button type="button" class="primary" id="btn-run">Run</button>
             <button type="button" id="btn-stop">Stop</button>
@@ -56,6 +69,7 @@
         <div class="metrics">
           <span>Path length (edges): <span class="value" id="path-len">—</span></span>
           <span id="explored-count">—</span>
+          <span>Local best : <span class="value" id="local-best">—</span></span>
         </div>
 
         <div class="canvas-row">
@@ -74,7 +88,10 @@
             </div>
           </div>
         </div>
-        <div class="episode-log" id="episode-log" aria-live="polite"></div>
+        <div class="log-container">
+          <div class="sub-title">logs</div>
+          <div class="episode-log" id="episode-log" aria-live="polite"></div>
+        </div>
       </div>
 
       <aside class="manual">
@@ -90,11 +107,10 @@
             found path (BFS and A* are shortest here; DFS may be longer).
           </li>
           <li>
-            <strong>Q-learning</strong> and <strong>Q-network</strong> train for the number of
-            <strong>Episodes</strong> you set. Each episode updates the heatmaps: training trace on
-            the world canvas and dedicated Q panel. Path length uses the <em>greedy</em> policy after
-            each update. When an episode reaches the goal, the agent’s path is animated on the
-            heatmap before the next episode (<strong>Q-learning</strong> and <strong>Q-network</strong>).
+            <strong>Q-learning</strong> updates tabular Q each episode (heatmaps). <strong>Local best</strong> is the smallest number of <em>environment steps</em> in an episode that reached the goal (updated whenever a shorter successful episode appears). Checkbox <strong>Final ep path only</strong>: when off (default), the rollout animates whenever the goal is reached each episode; when on, rollout animation plays only after the last episode.
+          </li>
+          <li>
+            <strong>Q-network</strong>: With <strong>Show data acquisition viz</strong> on, each rollout animates (orange trace), and logs list the replay-buffer tail (transition fields). With it off, phase 1 is text-only; after training we show heatmaps and the greedy path. <strong>Local best</strong> is the minimum rollout <em>steps</em> among acquisition episodes that reached the goal. Phase 2 is TD replay on the buffer regardless.
           </li>
           <li>
             <strong>Stop</strong> cancels a long run. Serve this folder with any static server (or

@@ -10,7 +10,8 @@ import {
 } from "./qlearning.js";
 import {
   QNetwork,
-  trainEpisodeQNet,
+  collectEpisodeQNet,
+  trainOneStepQNet,
   greedyPathFromQNet,
   cellMaxQGrid,
 } from "./qnet.js";
@@ -22,8 +23,8 @@ const algoDesc = {
   bfs: `<strong>Breadth-first search (BFS)</strong> explores the grid layer by layer using a queue. On this unit-cost grid, the first time the goal is dequeued yields a <em>shortest</em> path (minimum number of moves).`,
   dfs: `<strong>Depth-first search (DFS)</strong> follows one branch as far as possible using a stack, then backtracks. The <em>first</em> path found to the goal is not guaranteed to be shortest—compare path length with BFS or A*.`,
   astar: `<strong>A*</strong> combines best-first search with a heuristic: it prioritizes cells that look closer to the goal. Here we use Manhattan distance <em>h</em> (shown in each cell on the world grid), which is admissible on a 4-connected grid, so the first time the goal is expanded, the path is still optimal—often with fewer explored nodes than BFS.`,
-  qlearning: `<strong>Tabular Q-learning</strong> learns action values <em>Q(s,a)</em> by trial and error. The agent takes noisy actions, observes rewards (step penalty, wall bump, goal bonus), and nudges Q toward the Bellman backup. After training, a greedy policy follows the highest Q per state. The heatmap shows max<sub>a</sub> Q(s,a) each episode.`,
-  qnet: `<strong>Deep Q-network</strong> approximates Q with a small neural net over normalized coordinates instead of a full table. One-step TD targets train weights online; the heatmap visualizes the network’s max Q per cell after each episode.`,
+  qlearning: `<strong>Tabular Q-learning</strong> learns action values <em>Q(s,a)</em> by trial and error. <strong>Local best</strong> shows the shortest successful episode so far, measured in environment <em>steps</em> (<code>out.steps</code> when the goal is reached)—it only improves when a new episode hits the goal in fewer steps than any previous one.`,
+  qnet: `<strong>Deep Q-network</strong>: Phase 1 fills a replay buffer (no weight updates). <strong>Local best</strong> is the minimum rollout step count among acquisition episodes that reach the goal. With acquisition viz on, rollouts animate and the log prints buffer tails; with it off, phase 1 stays off-canvas. Phase 2 runs TD replay; heatmaps and the greedy path appear after training.`,
 };
 
 const els = {
@@ -37,6 +38,11 @@ const els = {
   btnStop: document.getElementById("btn-stop"),
   qEpisodesWrap: document.getElementById("q-episodes-wrap"),
   qEpisodesInput: document.getElementById("q-episodes-input"),
+  qPathModeWrap: document.getElementById("q-path-mode-wrap"),
+  qPathFinalOnly: document.getElementById("q-path-final-only"),
+  dqVizAcqWrap: document.getElementById("dq-viz-acq-wrap"),
+  dqVizAcquisition: document.getElementById("dq-viz-acquisition"),
+  localBest: document.getElementById("local-best"),
   graphSection: document.getElementById("graph-section"),
   qvizSection: document.getElementById("qviz-section"),
 };
@@ -69,6 +75,14 @@ function setExplored(text) {
   els.explored.textContent = text;
 }
 
+function setLocalBest(text) {
+  els.localBest.textContent = text;
+}
+
+function goalCellIndex(goal) {
+  return idx(goal[0], goal[1]);
+}
+
 function updateDesc() {
   const a = els.algo.value;
   els.desc.innerHTML = algoDesc[a] || "";
@@ -77,6 +91,8 @@ function updateDesc() {
   els.graphSection.style.display = showGraph ? "block" : "none";
   els.qvizSection.style.display = showQviz ? "block" : "none";
   els.qEpisodesWrap.style.display = showQviz ? "inline-flex" : "none";
+  els.qPathModeWrap.style.display = a === "qlearning" ? "inline-flex" : "none";
+  els.dqVizAcqWrap.style.display = a === "qnet" ? "inline-flex" : "none";
 }
 
 /**
@@ -291,10 +307,58 @@ async function animateEpisodePathWithQ(path, Qmax, grid, speedMs = 28) {
   }
 }
 
+/** Data-acquisition rollout on empty map (no Q heatmap). */
+async function animateAcquisitionRollout(path, speedMs = 16) {
+  if (!path || path.length < 2) return;
+  for (let i = 0; i < path.length; i++) {
+    if (state.stopRequested) return;
+    drawGridBase();
+    drawPath(path, "rgba(241, 143, 61, 0.48)", 0.48);
+    const [r, c] = path[i];
+    drawForklift(r, c);
+    await new Promise((resolve) => setTimeout(resolve, speedMs));
+  }
+}
+
+const ACTION_NAMES_NET = ["E", "S", "W", "N"];
+
+function cellFromQStateVec(xv) {
+  const inv = GRID_SIZE - 1 || 1;
+  const r = Math.min(
+    GRID_SIZE - 1,
+    Math.max(0, Math.round(xv[1] * inv))
+  );
+  const c = Math.min(
+    GRID_SIZE - 1,
+    Math.max(0, Math.round(xv[2] * inv))
+  );
+  return [r, c];
+}
+
+function appendBufferSnippetToLog(buffer, episodeDone) {
+  const maxTail = Math.min(buffer.length, 80);
+  const start = buffer.length - maxTail;
+  const lines = [
+    `—— Replay buffer after ep ${episodeDone} (size ${buffer.length}) — showing last ${maxTail} transitions —`,
+  ];
+  for (let i = start; i < buffer.length; i++) {
+    const t = buffer[i];
+    const [r1, c1] = cellFromQStateVec(t.x);
+    const [r2, c2] = cellFromQStateVec(t.x2);
+    const an = ACTION_NAMES_NET[t.a] ?? String(t.a);
+    lines.push(
+      `  #${i} s=(${r1},${c1}) a=${an} r=${t.reward.toFixed(2)} s'=(${r2},${c2}) done=${t.done ? 1 : 0}`
+    );
+  }
+  lines.push("");
+  return lines.join("\n");
+}
+
 /**
  * @param {{
  *   worldHeuristicGoal?: [number, number] | null;
  *   allTraveledGreen?: boolean;
+ *   onProgress?: (expandedVizPrefix: number) => void;
  * }} [opts]
  */
 async function animateGraph(order, nodes, edges, finalPath, opts = {}) {
@@ -302,6 +366,7 @@ async function animateGraph(order, nodes, edges, finalPath, opts = {}) {
   for (const [r, c] of finalPath) pathSet.add(idx(r, c));
   const hGoal = opts.worldHeuristicGoal ?? null;
   const exploreViz = { allTraveledGreen: opts.allTraveledGreen === true };
+  const onProgress = opts.onProgress;
   if (hGoal) {
     drawGridBase({ heuristicGoal: hGoal });
     drawForklift(state.start[0], state.start[1]);
@@ -312,10 +377,12 @@ async function animateGraph(order, nodes, edges, finalPath, opts = {}) {
     if (state.stopRequested) return;
     drawGraphStructure(nodes, edges);
     drawGraphExploration(order, u, pathSet, exploreViz);
+    if (typeof onProgress === "function") onProgress(Math.min(u, order.length));
     await new Promise((resolve) => setTimeout(resolve, 8));
   }
   drawGraphStructure(nodes, edges);
   drawGraphExploration(order, order.length, pathSet, exploreViz);
+  if (typeof onProgress === "function") onProgress(order.length);
 }
 
 function newMap() {
@@ -331,6 +398,7 @@ function newMap() {
   qvx.clearRect(0, 0, CANVAS_SIZE, CANVAS_SIZE);
   setPathLength("—");
   setExplored("—");
+  setLocalBest("—");
   els.episodeLog.textContent = "";
 }
 
@@ -347,36 +415,79 @@ async function runAlgorithm() {
   try {
     if (algo === "bfs") {
       const res = bfs(grid, start, goal);
-      setExplored(`Nodes expanded: ${res.order.length}`);
+      const gi = goalCellIndex(goal);
+      const firstGk = res.order.findIndex((id) => id === gi);
       if (res.path.length === 0) {
         setPathLength("No path");
+        setExplored(`Nodes expanded: ${res.order.length}`);
+        setLocalBest("—");
       } else {
         setPathLength(String(res.path.length - 1));
+        setLocalBest("—");
         await animateGraph(res.order, res.nodes, res.edges, res.path, {
           allTraveledGreen: true,
+          onProgress(upto) {
+            setExplored(
+              `Iteration (viz steps): ${upto}/${res.order.length} · total order: ${res.order.length}`
+            );
+            setLocalBest(
+              firstGk >= 0 && upto > firstGk ? String(res.dist) : "—"
+            );
+          },
         });
+        setExplored(`Nodes expanded: ${res.order.length}`);
+        setLocalBest(String(res.dist));
         await animatePath(res.path);
       }
     } else if (algo === "dfs") {
       const res = dfs(grid, start, goal);
-      setExplored(`Nodes expanded: ${res.order.length}`);
+      const gi = goalCellIndex(goal);
+      const firstGk = res.order.findIndex((id) => id === gi);
       if (res.path.length === 0) {
         setPathLength("No path");
+        setExplored(`Nodes expanded: ${res.order.length}`);
+        setLocalBest("—");
       } else {
         setPathLength(String(res.path.length - 1));
-        await animateGraph(res.order, res.nodes, res.edges, res.path);
+        setLocalBest("—");
+        await animateGraph(res.order, res.nodes, res.edges, res.path, {
+          onProgress(upto) {
+            setExplored(
+              `Iteration (viz steps): ${upto}/${res.order.length} · total order: ${res.order.length}`
+            );
+            setLocalBest(
+              firstGk >= 0 && upto > firstGk ? String(res.dist) : "—"
+            );
+          },
+        });
+        setExplored(`Nodes expanded: ${res.order.length}`);
+        setLocalBest(String(res.dist));
         await animatePath(res.path);
       }
     } else if (algo === "astar") {
       const res = astar(grid, start, goal);
-      setExplored(`Nodes expanded: ${res.order.length}`);
+      const gi = goalCellIndex(goal);
+      const firstGk = res.order.findIndex((id) => id === gi);
       if (res.path.length === 0) {
         setPathLength("No path");
+        setExplored(`Nodes expanded: ${res.order.length}`);
+        setLocalBest("—");
       } else {
         setPathLength(String(res.path.length - 1));
+        setLocalBest("—");
         await animateGraph(res.order, res.nodes, res.edges, res.path, {
           worldHeuristicGoal: goal,
+          onProgress(upto) {
+            setExplored(
+              `Iteration (viz steps): ${upto}/${res.order.length} · total order: ${res.order.length}`
+            );
+            setLocalBest(
+              firstGk >= 0 && upto > firstGk ? String(res.dist) : "—"
+            );
+          },
         });
+        setExplored(`Nodes expanded: ${res.order.length}`);
+        setLocalBest(String(res.dist));
         await animatePath(res.path, 40, { heuristicGoal: goal });
       }
     } else if (algo === "qlearning") {
@@ -387,12 +498,17 @@ async function runAlgorithm() {
       let epsilon = 0.35;
       const alpha = 0.15;
       const gamma = 0.95;
+      const pathFinalEpisodeOnly = els.qPathFinalOnly.checked === true;
       els.episodeLog.textContent = "";
+      let localBestEpisodeSteps = Infinity;
       for (let ep = 1; ep <= episodes; ep++) {
         if (state.stopRequested) break;
         epsilon = Math.max(0.05, epsilon * 0.97);
         const out = runEpisode(grid, start, goal, state.Q, epsilon, alpha, gamma);
         state.Q = out.Q;
+        if (out.reachedGoal && out.steps < localBestEpisodeSteps) {
+          localBestEpisodeSteps = out.steps;
+        }
         const Qmax = new Float32Array(GRID_SIZE * GRID_SIZE);
         for (let s = 0; s < GRID_SIZE * GRID_SIZE; s++) {
           Qmax[s] = maxQ(state.Q, s);
@@ -404,10 +520,24 @@ async function runAlgorithm() {
         const greedy = greedyPathFromQ(grid, start, goal, state.Q);
         const pl = greedy.ok ? greedy.dist : "∞ (policy loop)";
         setPathLength(String(pl));
-        setExplored(`Episode ${ep}/${episodes} · steps ${out.steps} · reached ${out.reachedGoal ? "yes" : "no"}`);
+        setExplored(
+          `Episode ${ep}/${episodes} · steps ${out.steps} · reached ${out.reachedGoal ? "yes" : "no"}`
+        );
+        setLocalBest(
+          localBestEpisodeSteps < Infinity
+            ? String(localBestEpisodeSteps)
+            : "—"
+        );
         els.episodeLog.textContent += `ep ${ep}: steps=${out.steps} goal=${out.reachedGoal ? 1 : 0} ε=${epsilon.toFixed(3)} pathLen(greedy)=${greedy.ok ? greedy.dist : "—"}\n`;
         els.episodeLog.scrollTop = els.episodeLog.scrollHeight;
-        if (out.reachedGoal && out.path.length > 1) {
+        const shouldAnimatePathEachGoal =
+          out.reachedGoal && out.path.length > 1 && !pathFinalEpisodeOnly;
+        const shouldAnimatePathFinal =
+          out.reachedGoal &&
+          out.path.length > 1 &&
+          pathFinalEpisodeOnly &&
+          ep === episodes;
+        if (shouldAnimatePathEachGoal || shouldAnimatePathFinal) {
           await animateEpisodePathWithQ(out.path, Qmax, grid, 26);
           drawGridBase();
           drawQHeatOnGrid(Qmax, grid);
@@ -420,6 +550,9 @@ async function runAlgorithm() {
       const final = greedyPathFromQ(grid, start, goal, state.Q);
       if (final.ok && final.path.length) {
         setPathLength(String(final.dist));
+        if (localBestEpisodeSteps < Infinity) {
+          setLocalBest(String(localBestEpisodeSteps));
+        }
         await animatePath(final.path);
       }
     } else if (algo === "qnet") {
@@ -428,40 +561,126 @@ async function runAlgorithm() {
         Math.max(1, parseInt(els.qEpisodesInput.value, 10) || 40)
       );
       let epsilon = 0.4;
+      const vizAcquisition = els.dqVizAcquisition.checked === true;
       els.episodeLog.textContent = "";
+      const buffer = [];
+      let localBestEpisodeSteps = Infinity;
+
+      if (!vizAcquisition) {
+        qvx.clearRect(0, 0, CANVAS_SIZE, CANVAS_SIZE);
+      }
+      drawGridBase();
+      drawForklift(start[0], start[1]);
+
+      els.episodeLog.textContent +=
+        "--- Phase 1: data acquisition (no weight updates) ---\n";
+
       for (let ep = 1; ep <= episodes; ep++) {
         if (state.stopRequested) break;
-        epsilon = Math.max(0.08, epsilon * 0.96);
-        const out = trainEpisodeQNet(state.qnet, grid, start, goal, {
+        epsilon = Math.max(0.12, epsilon * 0.97);
+        const out = collectEpisodeQNet(state.qnet, grid, start, goal, {
           epsilon,
-          alpha: 0.025,
-          gamma: 0.95,
+          maxSteps: 400,
         });
-        const Qgrid = cellMaxQGrid(state.qnet, grid, goal);
-        drawGridBase();
-        drawQHeatOnGrid(Qgrid, grid);
-        drawForklift(start[0], start[1]);
-        drawQvizHeat(Qgrid, grid);
-        const greedy = greedyPathFromQNet(state.qnet, grid, start, goal);
-        const pl = greedy.ok ? greedy.dist : "∞ (policy loop)";
-        setPathLength(String(pl));
-        setExplored(`Episode ${ep}/${episodes} · loss≈${out.loss.toFixed(2)} · reached ${out.reachedGoal ? "yes" : "no"}`);
-        els.episodeLog.textContent += `ep ${ep}: steps=${out.steps} goal=${out.reachedGoal ? 1 : 0} loss=${out.loss.toFixed(3)} pathLen(greedy)=${greedy.ok ? greedy.dist : "—"}\n`;
-        els.episodeLog.scrollTop = els.episodeLog.scrollHeight;
-        if (out.reachedGoal && out.path.length > 1) {
-          await animateEpisodePathWithQ(out.path, Qgrid, grid, 26);
-          drawGridBase();
-          drawQHeatOnGrid(Qgrid, grid);
-          drawForklift(start[0], start[1]);
-          drawQvizHeat(Qgrid, grid);
-        } else {
-          await new Promise((resolve) => setTimeout(resolve, 25));
+        for (const t of out.transitions) buffer.push(t);
+        if (out.reachedGoal && out.steps < localBestEpisodeSteps) {
+          localBestEpisodeSteps = out.steps;
         }
+        setExplored(
+          `Acquisition · ep ${ep}/${episodes} · steps ${out.steps} · buffer ${buffer.length}`
+        );
+        setPathLength("—");
+        setLocalBest(
+          localBestEpisodeSteps < Infinity
+            ? String(localBestEpisodeSteps)
+            : "—"
+        );
+        if (vizAcquisition) {
+          els.episodeLog.textContent += `acq ep ${ep}/${episodes}: steps=${out.steps} batch+=${out.transitions.length} reached=${out.reachedGoal ? "yes" : "no"}\n`;
+          els.episodeLog.textContent += appendBufferSnippetToLog(buffer, ep);
+          els.episodeLog.scrollTop = els.episodeLog.scrollHeight;
+          if (out.path.length > 1) {
+            await animateAcquisitionRollout(out.path, 16);
+          }
+          drawGridBase();
+          drawForklift(start[0], start[1]);
+          qvx.clearRect(0, 0, CANVAS_SIZE, CANVAS_SIZE);
+        } else {
+          els.episodeLog.textContent += `acq ep ${ep}: steps=${out.steps} buf+=${out.transitions.length} total=${buffer.length}\n`;
+          els.episodeLog.scrollTop = els.episodeLog.scrollHeight;
+        }
+        await new Promise((resolve) => setTimeout(resolve, vizAcquisition ? 25 : 1));
       }
+
+      if (vizAcquisition && buffer.length) {
+        els.episodeLog.textContent += `\n—— End of phase 1: replay buffer holds ${buffer.length} transitions ——\n`;
+        els.episodeLog.scrollTop = els.episodeLog.scrollHeight;
+      }
+
+      const gradSteps = Math.max(2500, buffer.length * 8);
+      if (buffer.length === 0) {
+        setExplored("No transitions collected — skipping training.");
+        els.episodeLog.textContent +=
+          "--- No data; run more episodes or check map. ---\n";
+      } else {
+        els.episodeLog.textContent += `\n--- Phase 2: training (${gradSteps} grad steps on buffer=${buffer.length}) ---\n`;
+        let gradDone = 0;
+        const trainChunk = 400;
+        while (gradDone < gradSteps && !state.stopRequested) {
+          const end = Math.min(gradDone + trainChunk, gradSteps);
+          for (; gradDone < end; gradDone++) {
+            const trans = buffer[(Math.random() * buffer.length) | 0];
+            trainOneStepQNet(state.qnet, trans, 0.02, 0.95);
+          }
+          setExplored(
+            `Training · grad steps ${Math.min(gradDone, gradSteps)}/${gradSteps} · buffer ${buffer.length}`
+          );
+          setLocalBest(
+            localBestEpisodeSteps < Infinity
+              ? String(localBestEpisodeSteps)
+              : "—"
+          );
+          await new Promise((resolve) => setTimeout(resolve, 0));
+        }
+        els.episodeLog.textContent += "--- Training finished. ---\n";
+      }
+
+      if (buffer.length && !vizAcquisition) {
+        els.episodeLog.textContent +=
+          "\n--- Visualization (post-training): Q heatmap + greedy forklift path — acquisition phase had no canvas updates ---\n";
+        els.episodeLog.scrollTop = els.episodeLog.scrollHeight;
+      } else if (buffer.length && vizAcquisition) {
+        els.episodeLog.textContent +=
+          "\n--- Visualization (post-training): trained Q heatmap + greedy path ---\n";
+        els.episodeLog.scrollTop = els.episodeLog.scrollHeight;
+      }
+
+      const Qfinal = cellMaxQGrid(state.qnet, grid, goal);
+      drawGridBase();
+      drawQHeatOnGrid(Qfinal, grid);
+      drawForklift(start[0], start[1]);
+      drawQvizHeat(Qfinal, grid);
+
       const final = greedyPathFromQNet(state.qnet, grid, start, goal);
       if (final.ok && final.path.length) {
         setPathLength(String(final.dist));
+        setLocalBest(
+          localBestEpisodeSteps < Infinity
+            ? String(localBestEpisodeSteps)
+            : "—"
+        );
+        setExplored(
+          buffer.length ? `Training done · greedy path edges: ${final.dist}` : "—"
+        );
         await animatePath(final.path);
+      } else if (final.path.length) {
+        setPathLength("∞ (policy loop)");
+        setExplored(`Training done · greedy did not solve goal`);
+        setLocalBest(
+          localBestEpisodeSteps < Infinity
+            ? String(localBestEpisodeSteps)
+            : "—"
+        );
       }
     }
   } finally {
