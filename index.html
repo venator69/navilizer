@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>16×16 Forklift Pathfinding Lab</title>
+    <link rel="stylesheet" href="css/style.css" />
+  </head>
+  <body>
+    <div class="layout">
+      <header>
+        <div class="container">
+          <div class="header-title">16×16 pixel forklift simulator</div>
+        </div>
+        <div class="container">
+          <div class="toolbar">
+            <label>
+              Algorithm
+              <select id="algo">
+                <option value="bfs">BFS</option>
+                <option value="dfs">DFS</option>
+                <option value="astar">A*</option>
+                <option value="qlearning">Q-learning</option>
+                <option value="qnet">Q-network</option>
+              </select>
+            </label>
+            <label id="q-episodes-wrap" style="display: none">
+              Episodes
+              <input
+                type="number"
+                id="q-episodes-input"
+                min="1"
+                max="200"
+                value="40"
+                style="
+                  width: 56px;
+                  background: var(--panel);
+                  border: 1px solid var(--border);
+                  color: var(--text);
+                  padding: 6px 8px;
+                  border-radius: 6px;
+                "
+              />
+            </label>
+            <button type="button" id="btn-new">New terrain</button>
+            <button type="button" class="primary" id="btn-run">Run</button>
+            <button type="button" id="btn-stop">Stop</button>
+          </div>
+        </div>
+
+      </header>
+
+      <div class="main-col">
+        <div class="algo-desc" id="algo-desc"></div>
+        
+        <div class="metrics">
+          <span>Path length (edges): <span class="value" id="path-len">—</span></span>
+          <span id="explored-count">—</span>
+        </div>
+
+        <div class="canvas-row">
+          <div class="canvas-pair">
+            <div class="canvas-wrap canvas-wrap--world">
+              <div class="sub-title">World & forklift</div>
+              <canvas id="grid-canvas" width="512" height="512"></canvas>
+            </div>
+            <div class="canvas-wrap canvas-wrap--graph" id="graph-section">
+              <div class="sub-title">Node graph (expanded order)</div>
+              <canvas id="graph-canvas" width="512" height="512"></canvas>
+            </div>
+            <div class="canvas-wrap canvas-wrap--qviz" id="qviz-section" style="display: none">
+              <div class="sub-title">Q visualization (max<sub>a</sub> Q per cell)</div>
+              <canvas id="qviz-canvas" width="512" height="512"></canvas>
+            </div>
+          </div>
+        </div>
+        <div class="episode-log" id="episode-log" aria-live="polite"></div>
+      </div>
+
+      <aside class="manual">
+        <div class="sub-title">How to play</div>
+        <ul>
+          <li>
+            <strong>New terrain</strong> builds a random 16×16 map with walls (~22%). Start is
+            top-left (blue), goal bottom-right (green). A valid path always exists.
+          </li>
+          <li>
+            Pick <strong>BFS</strong>, <strong>DFS</strong>, or <strong>A*</strong> and press <kbd>Run</kbd> to see the
+            graph (gray edges, nodes) and exploration highlights, then the forklift following the
+            found path (BFS and A* are shortest here; DFS may be longer).
+          </li>
+          <li>
+            <strong>Q-learning</strong> and <strong>Q-network</strong> train for the number of
+            <strong>Episodes</strong> you set. Each episode updates the heatmaps: training trace on
+            the world canvas and dedicated Q panel. Path length uses the <em>greedy</em> policy after
+            each update. When an episode reaches the goal, the agent’s path is animated on the
+            heatmap before the next episode (<strong>Q-learning</strong> and <strong>Q-network</strong>).
+          </li>
+          <li>
+            <strong>Stop</strong> cancels a long run. Serve this folder with any static server (or
+            open via <kbd>index.html</kbd> if your browser allows module scripts locally).
+          </li>
+        </ul>
+      </aside>
+    </div>
+
+    <script type="module" src="js/main.js"></script>
+  </body>
+</html>

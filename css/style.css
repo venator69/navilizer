@@ -1,0 +1,267 @@
+:root {
+  --panel: #1a2332;
+  --border: #2d3a4d;
+  --text: #e6edf3;
+  --muted: #000000;
+  --accent: #ff6f00;
+  --goal: #005110;
+  --wall: #484f58;
+  --forklift: #f0883e;
+  --path: rgba(88, 166, 255, 0.35);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: 'Franklin Gothic Medium', 'Arial Narrow', Arial, sans-serif;
+  background: #ffffb5;
+  color: var(--panel);
+  min-height: 100vh;
+  line-height: 1.45;
+}
+
+.container {
+  border: 4px solid var(--border);
+  background-color: white;
+  padding : 1rem;
+  max-width: 1700px;
+  margin: 1rem auto;
+  border-radius: 1rem;
+  box-shadow: 0 0 10px 0 rgba(0, 0, 0, 0.1);
+}
+.header-title {
+  font-size: 4rem;
+  font-weight: bold;
+  color: var(--panel);
+}
+
+.layout {
+  display: grid;
+  grid-template-columns: 1fr 280px;
+  grid-template-rows: auto 1fr;
+  gap: 16px;
+  padding: 16px;
+  max-width: 1700px;
+  margin: 0 auto;
+}
+
+header {
+  grid-column: 1 / -1;
+  border-bottom: 4px solid var(--border);
+  padding-bottom: 12px;
+}
+
+header h1 {
+  margin: 0 0 8px;
+  font-size: 1.35rem;
+  font-weight: 600;
+}
+
+.toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.toolbar label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 1rem;
+  color: var(--muted);
+}
+
+select,
+button {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 8px 12px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.875rem;
+}
+
+button:hover {
+  border-color: var(--accent);
+  background: #212d3f;
+}
+
+button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+button.primary {
+  background: #1f6feb;
+  border-color: #388bfd;
+}
+
+button.primary:hover:not(:disabled) {
+  background: #a6c9ff;
+}
+
+.main-col {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+
+.algo-desc {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px 14px;
+  font-size: 1rem;
+  color: var(--text);
+}
+
+.algo-desc strong {
+  color: var(--text);
+}
+
+.metrics {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  font-size: 1.5rem;
+  color: white;
+}
+
+.metrics span {
+  color: var(--muted);
+}
+
+.metrics .value {
+  color: var(--goal);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.canvas-row {
+  width: 100%;
+}
+
+/* World grid + node graph always side by side */
+.canvas-pair {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: nowrap;
+  gap: 16px;
+  align-items: flex-start;
+  width: 100%;
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: visible;
+  -webkit-overflow-scrolling: touch;
+}
+
+.canvas-wrap {
+  background: var(--text);
+  border: 4px solid var(--border);
+  border-radius: 1rem;
+  padding: 12px;
+  flex: 0 0 auto;
+}
+
+.canvas-wrap--world,
+.canvas-wrap--graph {
+  min-width: 0;
+}
+
+.canvas-wrap--qviz {
+  min-width: 0;
+}
+
+.sub-title {
+  font-size: 1.5rem;
+  font-weight: bold;
+  color: var(--panel);
+}
+
+
+
+.canvas-wrap h3 {
+  margin: 0 0 8px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+canvas {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+  border-radius: 4px;
+  background: #0d1117;
+}
+
+.manual {
+  grid-row: 2;
+  grid-column: 2;
+  position: sticky;
+  top: 16px;
+  align-self: start;
+  background: white;
+  border: 4px solid var(--border);
+  box-shadow: 0 0 10px 0 rgba(0, 0, 0, 0.1);
+  border-radius: 8px;
+  padding: 14px;
+  font-size: 1rem;
+}
+
+.manual h2 {
+  margin: 0 0 10px;
+  font-size: 0.95rem;
+  color: var(--text);
+}
+
+.manual ul {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--muted);
+}
+
+.manual li {
+  margin-bottom: 8px;
+}
+
+.manual kbd {
+  background: var(--text);
+  border: 1px solid var(--border);
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 0.75rem;
+}
+
+.episode-log {
+  max-height: 120px;
+  overflow-y: auto;
+  font-size: 0.75rem;
+  color: var(--muted);
+  margin-top: 10px;
+  padding: 8px;
+  background: #0d1117;
+  border-radius: 6px;
+  font-variant-numeric: tabular-nums;
+}
+
+@media (max-width: 1100px) {
+  .layout {
+    grid-template-columns: 1fr;
+  }
+
+  .manual {
+    grid-column: 1;
+    position: static;
+  }
+}
